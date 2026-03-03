@@ -1,0 +1,72 @@
+name: "🏛️ 字体版权 WACZ 存证引擎"
+
+# 触发条件：支持手动在网页端点击触发，并输入参数
+on:
+  workflow_dispatch:
+    inputs:
+      font_name:
+        description: '字体标识 (如: Alibaba_PuHuiTi, ⚠️请用英文/拼音和下划线，勿带空格)'
+        required: true
+        type: string
+      license_url:
+        description: '授权网页的完整 URL (如: https://...)'
+        required: true
+        type: string
+
+# 赋予权限：必须要有写入权限才能自动创建 Release
+permissions:
+  contents: write 
+
+jobs:
+  archive-and-release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 📥 拉取仓库代码
+        uses: actions/checkout@v4
+
+      - name: ⏱️ 生成时间戳
+        id: time
+        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV
+
+      - name: 🕷️ 运行 Browsertrix 抓取并生成 WACZ
+        # 使用官方 Docker 镜像，自动启动无头浏览器高保真抓取
+        run: |
+          mkdir -p crawls
+          docker run --rm -v $PWD/crawls:/crawls/ webrecorder/browsertrix-crawler crawl \
+            --url "${{ inputs.license_url }}" \
+            --generateWACZ \
+            --text \
+            --workers 1 \
+            --collection "${{ inputs.font_name }}"
+
+      - name: 🔐 计算 SHA-256 数字指纹
+        id: hash
+        run: |
+          # 定位 Browsertrix 生成的文件路径
+          FILE_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
+          # 计算哈希值
+          HASH=$(sha256sum "$FILE_PATH" | awk '{ print $1 }')
+          echo "WACZ_HASH=$HASH" >> $GITHUB_ENV
+          echo "WACZ_FILE=$FILE_PATH" >> $GITHUB_ENV
+          echo "✅ 生成完毕，SHA-256 指纹为: $HASH"
+
+      - name: 🚀 发布到 GitHub Releases
+        # 使用目前最稳定的 Release 插件
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: "archive-${{ inputs.font_name }}-${{ env.date }}"
+          name: "📜 存证存档: ${{ inputs.font_name }}"
+          body: |
+            ## ⚖️ 字体版权数字存证档案 (WACZ)
+            
+            - **字体标识**: `${{ inputs.font_name }}`
+            - **目标来源**: [点击访问原始链接](${{{ inputs.license_url }}})
+            - **抓取时间**: ${{ env.date }} (UTC)
+            - **SHA-256 指纹**: `${{ env.WACZ_HASH }}`
+            - **存证节点**: GitHub Actions (Ubuntu Environment)
+            
+            ### 🔍 如何验证与回放该证据？
+            1. 下载下方的 `.wacz` 附件文件。
+            2. 使用浏览器打开国际标准播放器：[ReplayWeb.page](https://replayweb.page/)
+            3. 将下载的文件拖入该网页，即可**100% 离线完美回放**抓取时的授权页（包含排版、图片与动态效果）。
+          files: ${{ env.WACZ_FILE }}
