@@ -29,7 +29,6 @@ jobs:
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV
 
       - name: 🕷️ 运行 Browsertrix 抓取并生成 WACZ
-        # 使用官方 Docker 镜像，自动启动无头浏览器高保真抓取
         run: |
           mkdir -p crawls
           docker run --rm -v $PWD/crawls:/crawls/ webrecorder/browsertrix-crawler crawl \
@@ -37,6 +36,8 @@ jobs:
             --generateWACZ \
             --text \
             --workers 1 \
+            --limit 1 \
+            --depth 0 \
             --collection "${{ inputs.font_name }}"
 
       - name: 🔐 计算 SHA-256 数字指纹
