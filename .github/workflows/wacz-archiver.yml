@@ -60,7 +60,7 @@ jobs:
             ## ⚖️ 字体版权数字存证档案 (WACZ)
             
             - **字体标识**: `${{ inputs.font_name }}`
-            - **目标来源**: [点击访问原始链接](${{{ inputs.license_url }}})
+            - **目标来源**: [点击访问原始链接](${{ inputs.license_url }})
             - **抓取时间**: ${{ env.date }} (UTC)
             - **SHA-256 指纹**: `${{ env.WACZ_HASH }}`
             - **存证节点**: GitHub Actions (Ubuntu Environment)
@@ -68,5 +68,5 @@ jobs:
             ### 🔍 如何验证与回放该证据？
             1. 下载下方的 `.wacz` 附件文件。
             2. 使用浏览器打开国际标准播放器：[ReplayWeb.page](https://replayweb.page/)
-            3. 将下载的文件拖入该网页，即可**100% 离线完美回放**抓取时的授权页（包含排版、图片与动态效果）。
+            3. 将下载的文件拖入该网页，即可**100% 离线完美回放**抓取时的授权页。
           files: ${{ env.WACZ_FILE }}
