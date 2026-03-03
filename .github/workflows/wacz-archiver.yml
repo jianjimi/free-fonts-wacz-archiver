@@ -23,6 +23,10 @@ jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
+      - name: Set Release Tag
+        run: |
+          # 生成格式如 20240321-153045 的时间戳
+          echo "RELEASE_TAG=archive-${{ github.event.inputs.font_id }}-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV
       # 🛡️ 改进：锁定 Hash 值而不是使用 @v4，防止第三方 Action 被黑导致供应链投毒
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -73,7 +77,7 @@ jobs:
         # 🛡️ 改进：锁定 Release 插件的 Hash 值
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
-          tag_name: "archive-${{ inputs.font_name }}-${{ env.date }}"
+          tag_name: ${{ env.RELEASE_TAG }}
           name: "📜 存证存档: ${{ inputs.font_name }}"
           body: |
             ## ⚖️ 字体版权数字存证档案 (WACZ)
