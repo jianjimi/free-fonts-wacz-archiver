@@ -12,29 +12,32 @@ on:
         required: true
         type: string
 
+# 🛡️ 核心权限配置：必须开启以生成不可伪造的证明
 permissions:
   contents: write 
-  # 🛡️ 新增：必须开启 id-token 权限，用于获取 GitHub OIDC 颁发的数字证书
   id-token: write
-  # 🛡️ 新增：允许工作流写入构建证明 (Attestations)
   attestations: write
 
 jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
-      - name: Set Release Tag
+      # 1. 初始化：设置北京时间
+      - name: ⏱️ 初始化变量与时间戳 (北京时间)
+        id: vars
         run: |
-          # 生成格式如 20240321-153045 的时间戳
-          echo "RELEASE_TAG=archive-${{ github.event.inputs.font_id }}-$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV
-      # 🛡️ 改进：锁定 Hash 值而不是使用 @v4，防止第三方 Action 被黑导致供应链投毒
+          # 设置时区为北京时间
+          BEIJING_NOW=$(TZ='Asia/Shanghai' date +'%Y%m%d-%H%M%S')
+          BEIJING_DISPLAY=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
+          
+          echo "date=$BEIJING_DISPLAY" >> $GITHUB_ENV
+          echo "RELEASE_TAG=archive-${{ inputs.font_name }}-$BEIJING_NOW" >> $GITHUB_ENV
+
+      # 2. 拉取仓库代码 (使用 Hash 锁定确保安全)
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
-      - name: ⏱️ 生成时间戳
-        id: time
-        run: echo "date=$(date -u +'%Y%m%d-%H%M%S')" >> $GITHUB_ENV # 强制使用 UTC 时间
-
+      # 3. 运行 Browsertrix 抓取
       - name: 🕷️ 运行 Browsertrix 抓取并生成 WACZ
         run: |
           mkdir -p crawls
@@ -47,8 +50,8 @@ jobs:
             --depth 0 \
             --collection "${{ inputs.font_name }}"
 
+      # 4. 计算哈希值
       - name: 🔐 计算 SHA-256 数字指纹
-        id: hash
         run: |
           FILE_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
           HASH=$(sha256sum "$FILE_PATH" | awk '{ print $1 }')
@@ -56,25 +59,23 @@ jobs:
           echo "WACZ_FILE=$FILE_PATH" >> $GITHUB_ENV
           echo "✅ 生成完毕，SHA-256 指纹为: $HASH"
 
-      # 🛡️ 新增核心：生成不可伪造的 GitHub 官方构建证明
+      # 5. 生成 GitHub 官方构建证明 (SLSA)
       - name: 📜 生成 GitHub 官方构建证明 (SLSA Provenance)
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "${{ env.WACZ_FILE }}"
 
-      # 🛡️ 新增辅助：生成去中心化的区块链可信时间戳
+      # 6. 生成区块链可信时间戳 (OpenTimestamps)
       - name: 🕒 生成 OpenTimestamps 可信时间戳
         run: |
           sudo apt-get update && sudo apt-get install -y python3-pip
-          # 安装 ots 客户端
           pip3 install opentimestamps-client --break-system-packages
-          # 为生成的 WACZ 文件打上时间戳
           ots stamp "${{ env.WACZ_FILE }}"
           echo "OTS_FILE=${{ env.WACZ_FILE }}.ots" >> $GITHUB_ENV
           echo "✅ 时间戳文件已生成"
 
+      # 7. 发布 Release 并上传附件
       - name: 🚀 发布到 GitHub Releases
-        # 🛡️ 改进：锁定 Release 插件的 Hash 值
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
@@ -84,7 +85,7 @@ jobs:
             
             - **字体标识**: `${{ inputs.font_name }}`
             - **目标来源**: [点击访问原始链接](${{ inputs.license_url }})
-            - **抓取时间**: ${{ env.date }} (UTC)
+            - **抓取时间**: ${{ env.date }} (北京时间)
             - **SHA-256 指纹**: `${{ env.WACZ_HASH }}`
             - **存证节点**: GitHub Actions (Ubuntu Environment)
             
@@ -94,20 +95,17 @@ jobs:
             为了防止篡改，本存证已引入密码学级的双重验证机制：
             
             1. **💻 官方云端构建证明 (SLSA Attestation)**: 
-               本 Release 附件已由 GitHub 官方的 OIDC 服务提供数字签名。这证明了该文件**完全由当前开源仓库的代码在 GitHub 官方受控服务器上自动化生成**，即使是仓库所有者也无法在本地篡改文件后伪造此签名。
+               本 Release 附件已由 GitHub 官方提供数字签名，证明文件完全由自动化脚本生成。
                > 验证命令: `gh attestation verify ${{ inputs.font_name }}.wacz -o ${{ github.repository_owner }}`
             
             2. **🕒 密码学时间戳 (OpenTimestamps)**: 
-               附件中的 `.ots` 文件为去中心化时间戳回执。它证明了该 `.wacz` 文件的哈希值在此时此刻确实存在，且事后无法倒填日期。
-               > 验证方式: 将 `.wacz` 与 `.ots` 文件一起上传至 [OpenTimestamps 官网](https://opentimestamps.org/) 即可校验。
+               附件中的 `.ots` 文件证明了该文件在 `${{ env.date }}` 确实已经存在。
             
             ---
             
             ### 🔍 如何验证与回放该证据？
-            1. 下载下方的 `.wacz` 附件文件。
-            2. 使用浏览器打开国际标准播放器：[ReplayWeb.page](https://replayweb.page/)
-            3. 将下载的文件拖入该网页，即可**100% 离线完美回放**抓取时的授权页。
-            
+            1. 下载下方的 `.wacz` 文件。
+            2. 在 [ReplayWeb.page](https://replayweb.page/) 中打开即可 1:1 还原网页。
           files: |
             ${{ env.WACZ_FILE }}
             ${{ env.OTS_FILE }}
