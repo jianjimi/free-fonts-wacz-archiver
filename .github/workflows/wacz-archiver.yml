@@ -21,7 +21,6 @@ jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
-      # 1. 初始化变量 (北京时间)
       - name: ⏱️ 初始化变量与时间戳
         id: vars
         run: |
@@ -34,8 +33,7 @@ jobs:
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      # 2. 深度截图 (直接调用 Playwright 确保滚动到底部)
-      - name: 📸 生成网页全长截图 (自动滚动触发懒加载)
+      - name: 📸 生成网页全长截图 (稳定性加固版)
         env:
           TARGET_URL: ${{ inputs.license_url }}
           OUT_FILE: ${{ env.NEW_FILENAME }}.png
@@ -48,40 +46,63 @@ jobs:
 
           async def main():
               async with async_playwright() as p:
+                  # 启动浏览器
                   browser = await p.chromium.launch()
-                  page = await browser.new_page(viewport={'width': 1280, 'height': 800})
-                  await page.goto("${{ env.TARGET_URL }}", wait_until="networkidle")
+                  # 设置 User-Agent 伪装成普通 Chrome 浏览器
+                  context = await browser.new_context(
+                      user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+                      viewport={'width': 1280, 'height': 800}
+                  )
+                  page = await context.new_page()
                   
-                  # 模拟真实滚动：每 100 毫秒滚动 200 像素，直到页面底部
-                  await page.evaluate("""
-                      async () => {
-                          await new Promise((resolve) => {
-                              let totalHeight = 0;
-                              let distance = 200;
-                              let timer = setInterval(() => {
-                                  let scrollHeight = document.body.scrollHeight;
-                                  window.scrollBy(0, distance);
-                                  totalHeight += distance;
-                                  if(totalHeight >= scrollHeight) {
-                                      clearInterval(timer);
-                                      resolve();
-                                  }
-                              }, 100);
-                          });
-                      }
-                  """)
-                  # 给一点缓冲时间加载最后出现的图片
-                  await page.wait_for_timeout(2000)
-                  # 截取全长图
-                  await page.screenshot(path="${{ env.OUT_FILE }}", full_page=True)
+                  print(f"正在访问: { '${{ env.TARGET_URL }}' } ...")
+                  
+                  try:
+                      # 关键修改：将 timeout 延长至 60秒，wait_until 改为 load
+                      await page.goto(
+                          "${{ env.TARGET_URL }}", 
+                          wait_until="load", 
+                          timeout=60000
+                      )
+                      
+                      # 稍微等待 2 秒让动态内容浮现
+                      await page.wait_for_timeout(2000)
+                      
+                      # 执行模拟滚动（触发懒加载）
+                      await page.evaluate("""
+                          async () => {
+                              await new Promise((resolve) => {
+                                  let totalHeight = 0;
+                                  let distance = 300;
+                                  let timer = setInterval(() => {
+                                      let scrollHeight = document.body.scrollHeight;
+                                      window.scrollBy(0, distance);
+                                      totalHeight += distance;
+                                      if(totalHeight >= scrollHeight || totalHeight > 15000) { // 防止无限滚动页面卡死
+                                          clearInterval(timer);
+                                          resolve();
+                                      }
+                                  }, 150);
+                              });
+                          }
+                      """)
+                      
+                      # 截图前最后等待资源加载
+                      await page.wait_for_timeout(3000)
+                      await page.screenshot(path="${{ env.OUT_FILE }}", full_page=True)
+                      print("✅ 截图成功")
+                  except Exception as e:
+                      print(f"❌ 截图过程出错: {e}")
+                      # 出错时截取一个当前页面的图，防止流程完全中断
+                      await page.screenshot(path="${{ env.OUT_FILE }}")
+                  
                   await browser.close()
 
           asyncio.run(main())
           EOF
           echo "PNG_FILE=./${OUT_FILE}" >> $GITHUB_ENV
 
-      # 3. 运行 Browsertrix 抓取 WACZ
-      - name: 🕷️ 运行 Browsertrix 抓取
+      - name: 🕷️ 运行 Browsertrix 抓取 WACZ
         run: |
           mkdir -p crawls
           docker run --rm -v $PWD/crawls:/crawls/ webrecorder/browsertrix-crawler crawl \
@@ -93,7 +114,6 @@ jobs:
             --depth 0 \
             --collection "${{ inputs.font_name }}"
 
-      # 4. 重命名与哈希
       - name: 📂 处理存证文件
         run: |
           OLD_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
@@ -103,13 +123,11 @@ jobs:
           HASH=$(sha256sum "$NEW_PATH" | awk '{ print $1 }')
           echo "WACZ_HASH=$HASH" >> $GITHUB_ENV
 
-      # 5. 安全证明 (SLSA)
       - name: 📜 生成 GitHub SLSA 证明
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "${{ env.WACZ_FILE }}"
 
-      # 6. 区块链时间戳 (OTS)
       - name: 🕒 生成 OpenTimestamps 时间戳
         run: |
           sudo apt-get update && sudo apt-get install -y python3-pip
@@ -117,27 +135,20 @@ jobs:
           ots stamp "${{ env.WACZ_FILE }}"
           echo "OTS_FILE=${{ env.WACZ_FILE }}.ots" >> $GITHUB_ENV
 
-      # 7. 最终发布
       - name: 🚀 发布到 GitHub Releases
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "📜 存证存档: ${{ inputs.font_name }} (${{ env.date }})"
           body: |
-            ## ⚖️ 字体版权数字存证档案 (深度存证版)
+            ## ⚖️ 字体版权数字存证档案
             - **字体标识**: `${{ inputs.font_name }}`
             - **抓取时间**: ${{ env.date }} (北京时间)
-            - **WACZ 哈希**: `${{ env.WACZ_HASH }}`
             
-            ### 📦 证据清单
-            1. `.wacz`: 高可信交互式网页档案 (支持 ReplayWeb.page 回放)
-            2. `.png`: **深度滚动全长截图** (已触发懒加载图片)
-            3. `.ots`: 区块链时间戳原始存证
-            
-            ---
-            ### 🛡️ 校验说明
-            - **SLSA 验证**: `gh attestation verify ${{ env.NEW_FILENAME }}.wacz -o ${{ github.repository_owner }}`
-            - **OTS 验证**: 初始状态为 `pending`，待比特币网络确认(约数小时)后可完成全量验证。
+            ### 📦 附件清单
+            1. `.wacz`: 高可信交互式网页档案
+            2. `.png`: 深度滚动全长截图
+            3. `.ots`: 区块链时间戳
           files: |
             ${{ env.WACZ_FILE }}
             ${{ env.OTS_FILE }}
