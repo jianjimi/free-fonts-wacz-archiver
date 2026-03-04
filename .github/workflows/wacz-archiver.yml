@@ -1,4 +1,4 @@
-name: "🏛️ 字体版权 WACZ 存证引擎 (高可信版)"
+name: "🏛️ 字体版权 WACZ 存证引擎 (视觉增强版)"
 
 on:
   workflow_dispatch:
@@ -21,23 +21,35 @@ jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
-      # 1. 初始化北京时间
+      # 1. 初始化北京时间与变量
       - name: ⏱️ 初始化变量与时间戳 (北京时间)
         id: vars
         run: |
-          # 设置时区为北京时间
           BEIJING_NOW=$(TZ='Asia/Shanghai' date +'%Y%m%d-%H%M%S')
           BEIJING_DISPLAY=$(TZ='Asia/Shanghai' date +'%Y-%m-%d %H:%M:%S')
           
           echo "date=$BEIJING_DISPLAY" >> $GITHUB_ENV
-          # Release 的 Tag 名
           echo "RELEASE_TAG=archive-${{ inputs.font_name }}-$BEIJING_NOW" >> $GITHUB_ENV
-          # 存证文件的新名字 (不带路径)
           echo "NEW_FILENAME=${{ inputs.font_name }}_$BEIJING_NOW" >> $GITHUB_ENV
 
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
+      # 2. 生成全长网页截图 (滚动到底部)
+      - name: 📸 生成网页全长截图 (滚动到底部)
+        run: |
+          pip install shot-scraper
+          shot-scraper install
+          # 使用 shot-scraper 截取全长图，--wait 3000 用于等待懒加载资源加载
+          shot-scraper "${{ inputs.license_url }}" \
+            --full-page \
+            --width 1280 \
+            --wait 3000 \
+            -o "./${{ env.NEW_FILENAME }}.png"
+          echo "PNG_FILE=./${{ env.NEW_FILENAME }}.png" >> $GITHUB_ENV
+          echo "✅ 截图已生成"
+
+      # 3. 运行 Browsertrix 抓取并生成 WACZ
       - name: 🕷️ 运行 Browsertrix 抓取并生成 WACZ
         run: |
           mkdir -p crawls
@@ -50,68 +62,66 @@ jobs:
             --depth 0 \
             --collection "${{ inputs.font_name }}"
 
-      # 2. 核心改进：重命名文件以包含时间戳
+      # 4. 重命名 WACZ 文件
       - name: 📂 重命名存证文件
         run: |
           OLD_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
           NEW_PATH="./crawls/collections/${{ inputs.font_name }}/${{ env.NEW_FILENAME }}.wacz"
-          
-          # 重命名原始 wacz 文件
           mv "$OLD_PATH" "$NEW_PATH"
-          
-          # 将最终路径存入环境变量
           echo "WACZ_FILE=$NEW_PATH" >> $GITHUB_ENV
-          echo "✅ 文件已重命名为: ${{ env.NEW_FILENAME }}.wacz"
+          echo "✅ WACZ已重命名"
 
+      # 5. 计算 SHA-256 (针对 WACZ)
       - name: 🔐 计算 SHA-256 数字指纹
         run: |
           HASH=$(sha256sum "${{ env.WACZ_FILE }}" | awk '{ print $1 }')
           echo "WACZ_HASH=$HASH" >> $GITHUB_ENV
-          echo "✅ SHA-256: $HASH"
 
+      # 6. 生成 GitHub 官方构建证明 (针对 WACZ)
       - name: 📜 生成 GitHub 官方构建证明 (SLSA)
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "${{ env.WACZ_FILE }}"
 
+      # 7. 生成区块链时间戳 (针对 WACZ)
       - name: 🕒 生成 OpenTimestamps 可信时间戳
         run: |
           sudo apt-get update && sudo apt-get install -y python3-pip
           pip3 install opentimestamps-client --break-system-packages
-          # 为重命名后的文件打上时间戳
           ots stamp "${{ env.WACZ_FILE }}"
           echo "OTS_FILE=${{ env.WACZ_FILE }}.ots" >> $GITHUB_ENV
-          echo "✅ 时间戳文件已生成: ${{ env.NEW_FILENAME }}.wacz.ots"
 
+      # 8. 发布 Release 并上传 WACZ + OTS + PNG
       - name: 🚀 发布到 GitHub Releases
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda # v2.2.1
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "📜 存证存档: ${{ inputs.font_name }} (${{ env.date }})"
           body: |
-            ## ⚖️ 字体版权数字存证档案 (WACZ)
+            ## ⚖️ 字体版权数字存证档案 (视觉增强版)
             
             - **字体标识**: `${{ inputs.font_name }}`
-            - **存证文件**: `${{ env.NEW_FILENAME }}.wacz`
             - **目标来源**: [点击访问原始链接](${{ inputs.license_url }})
             - **抓取时间**: ${{ env.date }} (北京时间)
-            - **SHA-256 指纹**: `${{ env.WACZ_HASH }}`
+            - **SHA-256 (WACZ)**: `${{ env.WACZ_HASH }}`
             
             ---
             
-            ### 🛡️ 证据防伪造声明 (High-Trust)
-            1. **💻 官方云端构建证明 (SLSA Attestation)**: 
-               证明文件由 GitHub Actions 环境自动化生成。
-               > 验证命令: `gh attestation verify ${{ env.NEW_FILENAME }}.wacz -o ${{ github.repository_owner }}`
-            
-            2. **🕒 密码学时间戳 (OpenTimestamps)**: 
-               `.ots` 文件证明了该哈希值在此时刻确实已存在。
+            ### 📦 附件说明
+            1. **`.wacz` (存证主体)**: 包含完整网页交互历史的档案。
+            2. **`.png` (直观截图)**: 网页从顶部到底部的全长截图。
+            3. **`.ots` (时间证明)**: 对应 `.wacz` 的区块链可信时间戳证明。
             
             ---
             
-            ### 🔍 如何验证与回放该证据？
-            1. 下载下方的 `${{ env.NEW_FILENAME }}.wacz`。
-            2. 在 [ReplayWeb.page](https://replayweb.page/) 中打开。
+            ### 🛡️ 证据防伪校验 (High-Trust)
+            - **SLSA 验证**: `gh attestation verify ${{ env.NEW_FILENAME }}.wacz -o ${{ github.repository_owner }}`
+            - **OTS 验证**: 将 `.wacz` 和 `.ots` 上传至 [OpenTimestamps.org](https://opentimestamps.org/)。注意：比特币网络确认可能需要 4-24 小时，初始状态可能显示 `pending`，此属正常。
+            
+            ### 🔍 验证与回放
+            - 截图可直接点击下方附件查看。
+            - 档案请在 [ReplayWeb.page](https://replayweb.page/) 中打开。
           files: |
             ${{ env.WACZ_FILE }}
             ${{ env.OTS_FILE }}
+            ${{ env.PNG_FILE }}
