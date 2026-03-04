@@ -1,4 +1,4 @@
-name: "🏛️ 字体版权 WACZ 存证引擎 (视觉增强版)"
+name: "🏛️ 字体版权 WACZ 存证引擎 (深度存证版)"
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ on:
         required: true
         type: string
       license_url:
-        description: '授权网页的完整 URL (如: https://...)'
+        description: '授权网页的完整 URL'
         required: true
         type: string
 
@@ -21,8 +21,8 @@ jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
-      # 1. 初始化变量
-      - name: ⏱️ 初始化变量与时间戳 (北京时间)
+      # 1. 初始化变量 (北京时间)
+      - name: ⏱️ 初始化变量与时间戳
         id: vars
         run: |
           BEIJING_NOW=$(TZ='Asia/Shanghai' date +'%Y%m%d-%H%M%S')
@@ -34,19 +34,53 @@ jobs:
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      # 2. 截图步骤 (已修正参数)
-      - name: 📸 生成网页全长截图
+      # 2. 深度截图 (直接调用 Playwright 确保滚动到底部)
+      - name: 📸 生成网页全长截图 (自动滚动触发懒加载)
+        env:
+          TARGET_URL: ${{ inputs.license_url }}
+          OUT_FILE: ${{ env.NEW_FILENAME }}.png
         run: |
-          pip install shot-scraper
-          shot-scraper install
-          shot-scraper shot "${{ inputs.license_url }}" \
-            --full \
-            --width 1280 \
-            --wait 3000 \
-            -o "./${{ env.NEW_FILENAME }}.png"
-          echo "PNG_FILE=./${{ env.NEW_FILENAME }}.png" >> $GITHUB_ENV
+          pip install playwright
+          playwright install chromium
+          python3 - <<EOF
+          import asyncio
+          from playwright.async_api import async_playwright
 
-      # 3. 抓取 WACZ
+          async def main():
+              async with async_playwright() as p:
+                  browser = await p.chromium.launch()
+                  page = await browser.new_page(viewport={'width': 1280, 'height': 800})
+                  await page.goto("${{ env.TARGET_URL }}", wait_until="networkidle")
+                  
+                  # 模拟真实滚动：每 100 毫秒滚动 200 像素，直到页面底部
+                  await page.evaluate("""
+                      async () => {
+                          await new Promise((resolve) => {
+                              let totalHeight = 0;
+                              let distance = 200;
+                              let timer = setInterval(() => {
+                                  let scrollHeight = document.body.scrollHeight;
+                                  window.scrollBy(0, distance);
+                                  totalHeight += distance;
+                                  if(totalHeight >= scrollHeight) {
+                                      clearInterval(timer);
+                                      resolve();
+                                  }
+                              }, 100);
+                          });
+                      }
+                  """)
+                  # 给一点缓冲时间加载最后出现的图片
+                  await page.wait_for_timeout(2000)
+                  # 截取全长图
+                  await page.screenshot(path="${{ env.OUT_FILE }}", full_page=True)
+                  await browser.close()
+
+          asyncio.run(main())
+          EOF
+          echo "PNG_FILE=./${OUT_FILE}" >> $GITHUB_ENV
+
+      # 3. 运行 Browsertrix 抓取 WACZ
       - name: 🕷️ 运行 Browsertrix 抓取
         run: |
           mkdir -p crawls
@@ -59,7 +93,7 @@ jobs:
             --depth 0 \
             --collection "${{ inputs.font_name }}"
 
-      # 4. 重命名与计算
+      # 4. 重命名与哈希
       - name: 📂 处理存证文件
         run: |
           OLD_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
@@ -69,12 +103,13 @@ jobs:
           HASH=$(sha256sum "$NEW_PATH" | awk '{ print $1 }')
           echo "WACZ_HASH=$HASH" >> $GITHUB_ENV
 
-      # 5. 安全证明与时间戳
+      # 5. 安全证明 (SLSA)
       - name: 📜 生成 GitHub SLSA 证明
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "${{ env.WACZ_FILE }}"
 
+      # 6. 区块链时间戳 (OTS)
       - name: 🕒 生成 OpenTimestamps 时间戳
         run: |
           sudo apt-get update && sudo apt-get install -y python3-pip
@@ -82,22 +117,27 @@ jobs:
           ots stamp "${{ env.WACZ_FILE }}"
           echo "OTS_FILE=${{ env.WACZ_FILE }}.ots" >> $GITHUB_ENV
 
-      # 6. 最终发布
+      # 7. 最终发布
       - name: 🚀 发布到 GitHub Releases
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "📜 存证存档: ${{ inputs.font_name }} (${{ env.date }})"
           body: |
-            ## ⚖️ 字体版权数字存证档案
+            ## ⚖️ 字体版权数字存证档案 (深度存证版)
             - **字体标识**: `${{ inputs.font_name }}`
             - **抓取时间**: ${{ env.date }} (北京时间)
-            - **哈希指纹**: `${{ env.WACZ_HASH }}`
+            - **WACZ 哈希**: `${{ env.WACZ_HASH }}`
             
-            ### 📦 附件清单
-            1. `.wacz`: 完整交互式网页档案
-            2. `.png`: 网页全长截图 (滚动到底部)
-            3. `.ots`: 区块链时间戳证明
+            ### 📦 证据清单
+            1. `.wacz`: 高可信交互式网页档案 (支持 ReplayWeb.page 回放)
+            2. `.png`: **深度滚动全长截图** (已触发懒加载图片)
+            3. `.ots`: 区块链时间戳原始存证
+            
+            ---
+            ### 🛡️ 校验说明
+            - **SLSA 验证**: `gh attestation verify ${{ env.NEW_FILENAME }}.wacz -o ${{ github.repository_owner }}`
+            - **OTS 验证**: 初始状态为 `pending`，待比特币网络确认(约数小时)后可完成全量验证。
           files: |
             ${{ env.WACZ_FILE }}
             ${{ env.OTS_FILE }}
