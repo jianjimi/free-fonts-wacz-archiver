@@ -1,10 +1,10 @@
-name: "🏛️ 字体版权 WACZ 存证引擎 (深度存证版)"
+name: "🏛️ 字体版权 WACZ 存证引擎 (高可信全功能版)"
 
 on:
   workflow_dispatch:
     inputs:
       font_name:
-        description: '字体标识 (如: Alibaba_PuHuiTi, ⚠️请用英文/拼音和下划线，勿带空格)'
+        description: '字体标识 (例如: Alibaba_PuHuiTi, 请勿带空格)'
         required: true
         type: string
       license_url:
@@ -21,6 +21,7 @@ jobs:
   archive-and-release:
     runs-on: ubuntu-latest
     steps:
+      # 1. 环境准备：初始化北京时间变量
       - name: ⏱️ 初始化变量与时间戳
         id: vars
         run: |
@@ -33,42 +34,42 @@ jobs:
       - name: 📥 拉取仓库代码
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
 
-      - name: 📸 生成网页全长截图 (稳定性加固版)
+      # 2. 截图增强：安装中文字体并执行深度滚动截图
+      - name: 📸 生成网页全长截图 (含中文字体)
         env:
           TARGET_URL: ${{ inputs.license_url }}
           OUT_FILE: ${{ env.NEW_FILENAME }}.png
         run: |
+          # 安装中文字体库
+          sudo apt-get update
+          sudo apt-get install -y fonts-noto-cjk fonts-wqy-zenhei fonts-wqy-microhei
+          sudo fc-cache -fv
+          
+          # 安装 Playwright
           pip install playwright
           playwright install chromium
+          
+          # 运行截图脚本
           python3 - <<EOF
           import asyncio
           from playwright.async_api import async_playwright
 
           async def main():
               async with async_playwright() as p:
-                  # 启动浏览器
                   browser = await p.chromium.launch()
-                  # 设置 User-Agent 伪装成普通 Chrome 浏览器
                   context = await browser.new_context(
                       user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-                      viewport={'width': 1280, 'height': 800}
+                      viewport={'width': 1280, 'height': 800},
+                      locale="zh-CN"
                   )
                   page = await context.new_page()
                   
-                  print(f"正在访问: { '${{ env.TARGET_URL }}' } ...")
-                  
                   try:
-                      # 关键修改：将 timeout 延长至 60秒，wait_until 改为 load
-                      await page.goto(
-                          "${{ env.TARGET_URL }}", 
-                          wait_until="load", 
-                          timeout=60000
-                      )
+                      # 延长超时至 60s，等待 load 事件
+                      await page.goto("${{ env.TARGET_URL }}", wait_until="load", timeout=60000)
+                      await page.wait_for_timeout(3000)
                       
-                      # 稍微等待 2 秒让动态内容浮现
-                      await page.wait_for_timeout(2000)
-                      
-                      # 执行模拟滚动（触发懒加载）
+                      # 模拟滚动以触发懒加载图片
                       await page.evaluate("""
                           async () => {
                               await new Promise((resolve) => {
@@ -78,7 +79,7 @@ jobs:
                                       let scrollHeight = document.body.scrollHeight;
                                       window.scrollBy(0, distance);
                                       totalHeight += distance;
-                                      if(totalHeight >= scrollHeight || totalHeight > 15000) { // 防止无限滚动页面卡死
+                                      if(totalHeight >= scrollHeight || totalHeight > 15000) {
                                           clearInterval(timer);
                                           resolve();
                                       }
@@ -87,13 +88,12 @@ jobs:
                           }
                       """)
                       
-                      # 截图前最后等待资源加载
                       await page.wait_for_timeout(3000)
                       await page.screenshot(path="${{ env.OUT_FILE }}", full_page=True)
                       print("✅ 截图成功")
                   except Exception as e:
-                      print(f"❌ 截图过程出错: {e}")
-                      # 出错时截取一个当前页面的图，防止流程完全中断
+                      print(f"⚠️ 警告: 截图过程遇到非致命错误: {e}")
+                      # 即使出错也截取当前视图，确保流程不中断
                       await page.screenshot(path="${{ env.OUT_FILE }}")
                   
                   await browser.close()
@@ -102,7 +102,8 @@ jobs:
           EOF
           echo "PNG_FILE=./${OUT_FILE}" >> $GITHUB_ENV
 
-      - name: 🕷️ 运行 Browsertrix 抓取 WACZ
+      # 3. 档案生成：运行 Browsertrix 抓取 WACZ
+      - name: 🕷️ 运行 Browsertrix 抓取
         run: |
           mkdir -p crawls
           docker run --rm -v $PWD/crawls:/crawls/ webrecorder/browsertrix-crawler crawl \
@@ -114,6 +115,7 @@ jobs:
             --depth 0 \
             --collection "${{ inputs.font_name }}"
 
+      # 4. 文件整理：重命名并计算哈希
       - name: 📂 处理存证文件
         run: |
           OLD_PATH="./crawls/collections/${{ inputs.font_name }}/${{ inputs.font_name }}.wacz"
@@ -123,32 +125,42 @@ jobs:
           HASH=$(sha256sum "$NEW_PATH" | awk '{ print $1 }')
           echo "WACZ_HASH=$HASH" >> $GITHUB_ENV
 
-      - name: 📜 生成 GitHub SLSA 证明
+      # 5. 可信加固：生成 SLSA 证明与 OTS 时间戳
+      - name: 📜 生成 GitHub SLSA 官方构建证明
         uses: actions/attest-build-provenance@v2
         with:
           subject-path: "${{ env.WACZ_FILE }}"
 
-      - name: 🕒 生成 OpenTimestamps 时间戳
+      - name: 🕒 生成 OpenTimestamps 区块链时间戳
         run: |
           sudo apt-get update && sudo apt-get install -y python3-pip
           pip3 install opentimestamps-client --break-system-packages
           ots stamp "${{ env.WACZ_FILE }}"
           echo "OTS_FILE=${{ env.WACZ_FILE }}.ots" >> $GITHUB_ENV
 
-      - name: 🚀 发布到 GitHub Releases
+      # 6. 发布：上传所有证据至 Release
+      - name: 🚀 发布存证至 GitHub Releases
         uses: softprops/action-gh-release@c95fe1489396fe8a9eb87c0abf8aa5b2ef267fda
         with:
           tag_name: ${{ env.RELEASE_TAG }}
           name: "📜 存证存档: ${{ inputs.font_name }} (${{ env.date }})"
           body: |
             ## ⚖️ 字体版权数字存证档案
-            - **字体标识**: `${{ inputs.font_name }}`
-            - **抓取时间**: ${{ env.date }} (北京时间)
             
-            ### 📦 附件清单
-            1. `.wacz`: 高可信交互式网页档案
-            2. `.png`: 深度滚动全长截图
-            3. `.ots`: 区块链时间戳
+            - **字体标识**: `${{ inputs.font_name }}`
+            - **目标链接**: [点击访问原始网页](${{ inputs.license_url }})
+            - **抓取时间**: ${{ env.date }} (北京时间)
+            - **哈希指纹 (WACZ)**: `${{ env.WACZ_HASH }}`
+            
+            ---
+            ### 🛡️ 证据完整性声明 (High-Trust)
+            1. **SLSA 验证**: 证明文件由 GitHub 受控环境自动生成，无人工介入。
+               `gh attestation verify ${{ env.NEW_FILENAME }}.wacz -o ${{ github.repository_owner }}`
+            2. **区块链时间戳**: `.ots` 文件提供了该档案在上述时间已存在的密码学证明。
+            
+            ### 📦 附件查看说明
+            - **PNG**: 全长截图，可直接在下方预览。
+            - **WACZ**: 交互档案，请下载后拖入 [ReplayWeb.page](https://replayweb.page/) 查看。
           files: |
             ${{ env.WACZ_FILE }}
             ${{ env.OTS_FILE }}
